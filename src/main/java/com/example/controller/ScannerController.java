@@ -4,7 +4,9 @@ import java.io.File;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.example.annotation.Controller;
 import com.example.annotation.Route;
@@ -79,5 +81,28 @@ public class ScannerController {
             }
         }
         return routes;
+    }
+
+    /**
+     * Retourne une map associant chaque URL complète (ex: "/etudiant/list") à sa
+     * méthode
+     */
+    public static Map<String, Method> mapperRoutes(String basePackage) {
+        Map<String, Method> mapping = new HashMap<>();
+
+        List<Class<?>> controllers = trouverControllers(basePackage);
+        for (Class<?> controller : controllers) {
+            Controller ctrlAnnotation = controller.getAnnotation(Controller.class);
+            String baseUrl = ctrlAnnotation.value();
+
+            for (Method methode : controller.getDeclaredMethods()) {
+                if (methode.isAnnotationPresent(Route.class)) {
+                    Route routeAnnotation = methode.getAnnotation(Route.class);
+                    String fullUrl = baseUrl + routeAnnotation.value();
+                    mapping.put(fullUrl, methode);
+                }
+            }
+        }
+        return mapping;
     }
 }
