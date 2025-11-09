@@ -6,7 +6,7 @@ import java.lang.annotation.Target;
 import java.lang.annotation.ElementType;
 
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.TYPE) // niveau classe
-public @interface Controller {
-    String value() default ""; // URL de base, ex: "/etudiant"
+@Target(ElementType.METHOD) // niveau méthode
+public @interface Route {
+    String value(); // ex: "/list", "/create"
 }

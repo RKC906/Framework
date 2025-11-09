@@ -1,36 +1,42 @@
 package com.example.controller;
 
 import java.io.File;
+import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.example.annotation.Controller;
+import com.example.annotation.Route;
 
 public class ScannerController {
 
-    public static List<String> trouverControllers(String basePackage) {
-        List<String> nomsControllers = new ArrayList<>();
+    /**
+     * Retourne toutes les classes annotées @Controller dans le package de base
+     */
+    public static List<Class<?>> trouverControllers(String basePackage) {
+        List<Class<?>> classesControllers = new ArrayList<>();
 
-        try 
-        {
+        try {
             String chemin = basePackage.replace('.', '/');
             ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
             URL resource = classLoader.getResource(chemin);
 
             if (resource != null) {
                 File repertoire = new File(resource.getFile());
-                scannerRepertoire(repertoire, basePackage, nomsControllers);
+                scannerRepertoire(repertoire, basePackage, classesControllers);
             }
 
         } catch (Exception e) {
             e.printStackTrace();
         }
 
-        return nomsControllers;
+        return classesControllers;
     }
 
-    private static void scannerRepertoire(File repertoire, String packageName, List<String> controllers) {
+    private static void scannerRepertoire(File repertoire, String packageName, List<Class<?>> controllers) {
         if (!repertoire.exists() || !repertoire.isDirectory())
             return;
 
@@ -48,7 +54,7 @@ public class ScannerController {
         }
     }
 
-    private static void verifierAnnotationController(File fichier, String packageName, List<String> controllers) {
+    private static void verifierAnnotationController(File fichier, String packageName, List<Class<?>> controllers) {
         try {
             String nomClasse = fichier.getName().substring(0, fichier.getName().length() - 6);
             String nomCompletClasse = packageName + "." + nomClasse;
@@ -56,11 +62,47 @@ public class ScannerController {
             Class<?> classe = Class.forName(nomCompletClasse);
 
             if (classe.isAnnotationPresent(Controller.class)) {
-                controllers.add(nomCompletClasse);
+                controllers.add(classe);
             }
 
         } catch (Exception e) {
             System.err.println("Erreur pour " + fichier.getName() + " : " + e.getMessage());
         }
+    }
+
+    /**
+     * Retourne toutes les méthodes annotées @Route pour une classe donnée
+     */
+    public static List<Method> trouverMethodesRoute(Class<?> controllerClass) {
+        List<Method> routes = new ArrayList<>();
+        for (Method methode : controllerClass.getDeclaredMethods()) {
+            if (methode.isAnnotationPresent(Route.class)) {
+                routes.add(methode);
+            }
+        }
+        return routes;
+    }
+
+    /**
+     * Retourne une map associant chaque URL complète (ex: "/etudiant/list") à sa
+     * méthode
+     */
+    public static Map<String, Method> mapperRoutes(String basePackage) {
+        Map<String, Method> mapping = new HashMap<>();
+
+        List<Class<?>> controllers = trouverControllers(basePackage);
+        for (Class<?> controller : controllers) {
+            Controller ctrlAnnotation = controller.getAnnotation(Controller.class);
+            String baseUrl = ctrlAnnotation.value();
+
+            for (Method methode : controller.getDeclaredMethods()) {
+                if (methode.isAnnotationPresent(Route.class)) {
+                    Route routeAnnotation = methode.getAnnotation(Route.class);
+                    String fullUrl = baseUrl + routeAnnotation.value();
+                    mapping.put(fullUrl, methode);
+                }
+            }
+        }
+        return mapping;
     }
 }
