@@ -105,4 +105,36 @@ public class ScannerController {
         }
         return mapping;
     }
+
+    // exécuter méthode annotée @Route
+    public static String executerRoute(Class<?> controllerClass, String routePath) {
+        try {
+            Object instance = controllerClass.getDeclaredConstructor().newInstance();
+
+            for (Method method : controllerClass.getDeclaredMethods()) {
+                if (method.isAnnotationPresent(Route.class)) {
+
+                    Route r = method.getAnnotation(Route.class);
+
+                    if (r.value().equals(routePath)) {
+                        Object retour = method.invoke(instance);
+
+                        // Vérifier que c'est une chaîne
+                        if (retour instanceof String) {
+                            return (String) retour;
+                        } else {
+                            return "Erreur : la méthode " + method.getName() +
+                                    " ne retourne pas une chaîne.";
+                        }
+                    }
+                }
+            }
+
+            return "Aucune méthode trouvée pour la route : " + routePath;
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "Erreur lors de l'exécution : " + e.getMessage();
+        }
+    }
 }
