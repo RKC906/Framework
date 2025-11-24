@@ -1,10 +1,15 @@
 package com.example.classe;
 
+import java.util.HashMap;
 import java.util.Map;
 
 public class ModelVue {
     String view;
     Map<String, Object> data;
+
+    public ModelVue() {
+        this.setData(new HashMap<>());
+    }
 
     public ModelVue(String view) {
         this.setView(view);

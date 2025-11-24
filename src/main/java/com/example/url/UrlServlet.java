@@ -161,9 +161,8 @@ public class UrlServlet extends HttpServlet {
         return value; // String
     }
 
-    // -------------------------------------------------
-    // 🔥 Matching des URLs dynamiques : /user/{id}
-    // -------------------------------------------------
+    //  Matching des URLs dynamiques : /user/{id}
+
     private Method matchDynamicRoute(String path, HttpServletRequest req) {
 
         for (String pattern : dynamicRoutes.keySet()) {
