@@ -121,9 +121,8 @@ public class UrlServlet extends HttpServlet {
         }
     }
 
-    // -------------------------------------------------
-    // 🔥 Injection automatique des paramètres
-    // -------------------------------------------------
+   
+    //  Injection automatique des paramètres
     private Object[] injectParams(HttpServletRequest req, Method method) {
 
         Parameter[] parameters = method.getParameters();
@@ -161,9 +160,7 @@ public class UrlServlet extends HttpServlet {
         return value; // String
     }
 
-    // -------------------------------------------------
-    // 🔥 Matching des URLs dynamiques : /user/{id}
-    // -------------------------------------------------
+    // Matching des URLs dynamiques : /user/{id}
     private Method matchDynamicRoute(String path, HttpServletRequest req) {
 
         for (String pattern : dynamicRoutes.keySet()) {
