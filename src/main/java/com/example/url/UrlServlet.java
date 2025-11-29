@@ -7,8 +7,9 @@ import java.lang.reflect.Parameter;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.example.controller.ScannerController;
+import com.example.classe.Caste;
 import com.example.classe.ModelVue;
+import com.example.controller.ScannerController;
 
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
@@ -22,24 +23,25 @@ public class UrlServlet extends HttpServlet {
 
     private RequestDispatcher defaultDispatcher;
 
-    // mapping exact + dynamiques
+    // routes exactes
     private Map<String, Method> routeMapping;
+
+    // routes dynamiques /user/{id}
     private Map<String, Method> dynamicRoutes;
 
     @Override
     public void init() {
         defaultDispatcher = getServletContext().getNamedDispatcher("default");
 
+        // récupérer package depuis web.xml
         String basePackage = getServletConfig().getInitParameter("base-package");
-        if (basePackage == null) {
-            System.err.println("⚠ Aucun package spécifié dans web.xml");
-            return;
+
+        try {
+            routeMapping = ScannerController.mapperRoutes(basePackage);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
 
-        // routes exactes
-        routeMapping = ScannerController.mapperRoutes(basePackage);
-
-        // routes dynamiques : /user/{id}
         dynamicRoutes = new HashMap<>();
 
         for (String url : routeMapping.keySet()) {
@@ -48,8 +50,10 @@ public class UrlServlet extends HttpServlet {
             }
         }
 
-        System.out.println("=== Routes détectées ===");
-        routeMapping.forEach((url, m) -> System.out.println("➡ " + url + " -> " + m.getDeclaringClass().getName()));
+        System.out.println("=== ROUTES DETECTEES ===");
+        routeMapping.forEach((u, m) ->
+            System.out.println("➡ " + u + "  ->  " + m.getDeclaringClass().getName())
+        );
     }
 
     @Override
@@ -59,19 +63,22 @@ public class UrlServlet extends HttpServlet {
         String path = req.getRequestURI().substring(req.getContextPath().length());
         boolean resourceExists = getServletContext().getResource(path) != null;
 
+        // si statique => images, css, html
         if (resourceExists) {
-            defaultServe(req, res);
-        } else {
-            handleDynamicRoute(req, res, path);
+            defaultDispatcher.forward(req, res);
+            return;
         }
+
+        // sinon => controller
+        handleRoute(req, res, path);
     }
 
-    private void handleDynamicRoute(HttpServletRequest req, HttpServletResponse res, String path)
+    private void handleRoute(HttpServletRequest req, HttpServletResponse res, String path)
             throws IOException, ServletException {
 
         Method method = routeMapping.get(path);
 
-        // essayer URL dynamiques
+        // si URL exacte non trouvée → test des URL dynamiques
         if (method == null) {
             method = matchDynamicRoute(path, req);
         }
@@ -82,14 +89,13 @@ public class UrlServlet extends HttpServlet {
         }
 
         try {
-            Object controllerInstance = method.getDeclaringClass().getDeclaredConstructor().newInstance();
+            Object controller = method.getDeclaringClass().getDeclaredConstructor().newInstance();
 
-            // injection des paramètres
             Object[] params = injectParams(req, method);
 
-            Object result = method.invoke(controllerInstance, params);
+            Object result = method.invoke(controller, params);
 
-            // === gestion ModelView ===
+            // ---- ModelVue ----
             if (result instanceof ModelVue mv) {
                 if (mv.getData() != null) {
                     mv.getData().forEach(req::setAttribute);
@@ -98,20 +104,20 @@ public class UrlServlet extends HttpServlet {
                 return;
             }
 
-            // === gestion JSON ===
+            // ---- JSON ----
             if (result instanceof Map || result instanceof Iterable || result instanceof Object[]) {
                 res.setContentType("application/json;charset=UTF-8");
                 res.getWriter().println(toJson(result));
                 return;
             }
 
-            // === gestion void ===
+            // ---- VOID ----
             if (method.getReturnType() == void.class) {
                 res.getWriter().println("<h3>Action effectuée</h3>");
                 return;
             }
 
-            // === gestion String (HTML) ===
+            // ---- String → HTML ----
             res.setContentType("text/html;charset=UTF-8");
             res.getWriter().println(result != null ? result.toString() : "Aucune réponse");
 
@@ -121,51 +127,14 @@ public class UrlServlet extends HttpServlet {
         }
     }
 
-   
-    //  Injection automatique des paramètres
-    private Object[] injectParams(HttpServletRequest req, Method method) {
-
-        Parameter[] parameters = method.getParameters();
-        Object[] values = new Object[parameters.length];
-
-        Map<String, String> pathParams = (Map<String, String>) req.getAttribute("pathParams");
-
-        for (int i = 0; i < parameters.length; i++) {
-            String name = parameters[i].getName();
-
-            // paramètres dynamiques (ex: /user/{id})
-            if (pathParams != null && pathParams.containsKey(name)) {
-                values[i] = convertType(pathParams.get(name), parameters[i].getType());
-                continue;
-            }
-
-            // query string et forms
-            String value = req.getParameter(name);
-            values[i] = convertType(value, parameters[i].getType());
-        }
-
-        return values;
-    }
-
-    // conversion String → type primitif
-    private Object convertType(String value, Class<?> type) {
-        if (value == null)
-            return null;
-        if (type == int.class || type == Integer.class)
-            return Integer.parseInt(value);
-        if (type == double.class || type == Double.class)
-            return Double.parseDouble(value);
-        if (type == long.class || type == Long.class)
-            return Long.parseLong(value);
-        return value; // String
-    }
-
-    // Matching des URLs dynamiques : /user/{id}
+    // MATCHING URL DYNAMIQUE : /user/{id}
     private Method matchDynamicRoute(String path, HttpServletRequest req) {
 
         for (String pattern : dynamicRoutes.keySet()) {
 
-            String regex = pattern.replaceAll("\\{[^/]+}", "([^/]+)");
+            // ajouter ^ et $ pour un match exact
+            String regex = "^" + pattern.replaceAll("\\{[^/]+}", "([^/]+)") + "$";
+
             if (path.matches(regex)) {
 
                 Map<String, String> params = new HashMap<>();
@@ -187,19 +156,75 @@ public class UrlServlet extends HttpServlet {
         return null;
     }
 
-    // mini conversion Java → JSON
-    private String toJson(Object obj) {
-        return "{\"json\":\"" + obj.toString().replace("\"", "\\\"") + "\"}";
+    // INJECTION AUTOMATIQUE DES PARAMETRES
+    private Object[] injectParams(HttpServletRequest req, Method method) {
+
+        Parameter[] parameters = method.getParameters();
+        Object[] values = new Object[parameters.length];
+
+        Map<String, String> pathParams = (Map<String, String>) req.getAttribute("pathParams");
+
+        for (int i = 0; i < parameters.length; i++) {
+
+            String name = parameters[i].getName();
+            Class<?> type = parameters[i].getType();
+
+            // ---- paramètres dynamiques {id}
+            if (pathParams != null && pathParams.containsKey(name)) {
+                values[i] = new Caste(pathParams.get(name), type).getTypedValue();
+                continue;
+            }
+
+            // ---- paramètres du formulaire (automatique)
+            Map<String, String[]> form = req.getParameterMap();
+
+            if (form.containsKey(name)) {
+                values[i] = new Caste(form.get(name)[0], type).getTypedValue();
+                continue;
+            }
+
+            // ---- valeur par défaut (null ou primitive)
+            values[i] = null;
+        }
+
+        return values;
     }
 
-    private void sendError(HttpServletResponse res, int code, String message) throws IOException {
+    
+    // MINI JSON UTIL
+    
+    private String toJson(Object obj) {
+
+        if (obj instanceof Map<?, ?> map) {
+            StringBuilder sb = new StringBuilder("{");
+            int i = 0;
+            for (var e : map.entrySet()) {
+                if (i++ > 0)
+                    sb.append(",");
+                sb.append("\"").append(e.getKey()).append("\":\"")
+                        .append(e.getValue()).append("\"");
+            }
+            return sb.append("}").toString();
+        }
+
+        if (obj instanceof Iterable<?> it) {
+            StringBuilder sb = new StringBuilder("[");
+            int i = 0;
+            for (var e : it) {
+                if (i++ > 0)
+                    sb.append(",");
+                sb.append("\"").append(e).append("\"");
+            }
+            return sb.append("]").toString();
+        }
+
+        return "\"" + obj.toString() + "\"";
+    }
+
+    private void sendError(HttpServletResponse res, int code, String message)
+            throws IOException {
         res.setStatus(code);
         res.setContentType("text/html;charset=UTF-8");
         res.getWriter().println("<h1>Erreur " + code + "</h1><p>" + message + "</p>");
-    }
-
-    private void defaultServe(HttpServletRequest req, HttpServletResponse res)
-            throws ServletException, IOException {
-        defaultDispatcher.forward(req, res);
     }
 }
