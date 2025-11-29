@@ -123,8 +123,34 @@ public class UrlServlet extends HttpServlet {
 
         } catch (Exception e) {
             e.printStackTrace();
-            sendError(res, 500, "Erreur interne : " + e.getMessage());
+            sendError(res, 500, e.getMessage());
         }
+    }
+
+   
+    //  Injection automatique des paramètres
+    private Object[] injectParams(HttpServletRequest req, Method method) {
+
+        Parameter[] parameters = method.getParameters();
+        Object[] values = new Object[parameters.length];
+
+        Map<String, String> pathParams = (Map<String, String>) req.getAttribute("pathParams");
+
+        for (int i = 0; i < parameters.length; i++) {
+            String name = parameters[i].getName();
+
+            // paramètres dynamiques (ex: /user/{id})
+            if (pathParams != null && pathParams.containsKey(name)) {
+                values[i] = convertType(pathParams.get(name), parameters[i].getType());
+                continue;
+            }
+
+            // query string et forms
+            String value = req.getParameter(name);
+            values[i] = convertType(value, parameters[i].getType());
+        }
+
+        return values;
     }
 
     // MATCHING URL DYNAMIQUE : /user/{id}
