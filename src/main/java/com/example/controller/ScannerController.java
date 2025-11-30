@@ -3,26 +3,68 @@ package com.example.controller;
 import java.io.File;
 import java.lang.reflect.Method;
 import java.net.URL;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import com.example.annotation.Controller;
 import com.example.annotation.Route;
 
 public class ScannerController {
 
-    /**
-     * Retourne toutes les classes annotées @Controller dans le package de base
-     */
+    public static class RouteInfo {
+        public String url;
+        public boolean dynamic;
+        public Method method;
+        public Class<?> controllerClass;
+        public List<String> pathVariables;
+
+        public RouteInfo(String url, boolean dynamic, Method m, Class<?> c, List<String> vars) {
+            this.url = url;
+            this.dynamic = dynamic;
+            this.method = m;
+            this.controllerClass = c;
+            this.pathVariables = vars;
+        }
+    }
+
+    /** Retourne une liste structurée de toutes les routes */
+    public static List<RouteInfo> scanRoutes(String basePackage) {
+        List<RouteInfo> list = new ArrayList<>();
+
+        for (Class<?> controller : trouverControllers(basePackage)) {
+
+            String baseUrl = controller.getAnnotation(Controller.class).value();
+
+            for (Method m : controller.getDeclaredMethods()) {
+                if (m.isAnnotationPresent(Route.class)) {
+
+                    String u = baseUrl + m.getAnnotation(Route.class).value();
+
+                    boolean dynamic = u.contains("{");
+
+                    List<String> vars = new ArrayList<>();
+                    if (dynamic) {
+                        for (String part : u.split("/")) {
+                            if (part.startsWith("{") && part.endsWith("}")) {
+                                vars.add(part.substring(1, part.length() - 1));
+                            }
+                        }
+                    }
+
+                    list.add(new RouteInfo(u, dynamic, m, controller, vars));
+                }
+            }
+        }
+        return list;
+    }
+
+    // === Trouver les classes contrôleurs ===
     public static List<Class<?>> trouverControllers(String basePackage) {
+
         List<Class<?>> classesControllers = new ArrayList<>();
 
         try {
             String chemin = basePackage.replace('.', '/');
-            ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-            URL resource = classLoader.getResource(chemin);
+            URL resource = Thread.currentThread().getContextClassLoader().getResource(chemin);
 
             if (resource != null) {
                 File repertoire = new File(resource.getFile());
@@ -36,105 +78,27 @@ public class ScannerController {
         return classesControllers;
     }
 
-    private static void scannerRepertoire(File repertoire, String packageName, List<Class<?>> controllers) {
-        if (!repertoire.exists() || !repertoire.isDirectory())
+    private static void scannerRepertoire(File rep, String pkg, List<Class<?>> list) {
+        if (!rep.exists() || !rep.isDirectory())
             return;
 
-        File[] fichiers = repertoire.listFiles();
-        if (fichiers == null)
-            return;
+        for (File f : rep.listFiles()) {
 
-        for (File fichier : fichiers) {
-            if (fichier.isDirectory()) {
-                String nouveauPackage = packageName + "." + fichier.getName();
-                scannerRepertoire(fichier, nouveauPackage, controllers);
-            } else if (fichier.getName().endsWith(".class")) {
-                verifierAnnotationController(fichier, packageName, controllers);
-            }
-        }
-    }
+            if (f.isDirectory()) {
+                scannerRepertoire(f, pkg + "." + f.getName(), list);
+            } else if (f.getName().endsWith(".class")) {
 
-    private static void verifierAnnotationController(File fichier, String packageName, List<Class<?>> controllers) {
-        try {
-            String nomClasse = fichier.getName().substring(0, fichier.getName().length() - 6);
-            String nomCompletClasse = packageName + "." + nomClasse;
+                String nom = f.getName().replace(".class", "");
+                try {
+                    Class<?> c = Class.forName(pkg + "." + nom);
 
-            Class<?> classe = Class.forName(nomCompletClasse);
-
-            if (classe.isAnnotationPresent(Controller.class)) {
-                controllers.add(classe);
-            }
-
-        } catch (Exception e) {
-            System.err.println("Erreur pour " + fichier.getName() + " : " + e.getMessage());
-        }
-    }
-
-    /**
-     * Retourne toutes les méthodes annotées @Route pour une classe donnée
-     */
-    public static List<Method> trouverMethodesRoute(Class<?> controllerClass) {
-        List<Method> routes = new ArrayList<>();
-        for (Method methode : controllerClass.getDeclaredMethods()) {
-            if (methode.isAnnotationPresent(Route.class)) {
-                routes.add(methode);
-            }
-        }
-        return routes;
-    }
-
-    /**
-     * Retourne une map associant chaque URL complète (ex: "/etudiant/list") à sa
-     * méthode
-     */
-    public static Map<String, Method> mapperRoutes(String basePackage) {
-        Map<String, Method> mapping = new HashMap<>();
-
-        List<Class<?>> controllers = trouverControllers(basePackage);
-        for (Class<?> controller : controllers) {
-            Controller ctrlAnnotation = controller.getAnnotation(Controller.class);
-            String baseUrl = ctrlAnnotation.value();
-
-            for (Method methode : controller.getDeclaredMethods()) {
-                if (methode.isAnnotationPresent(Route.class)) {
-                    Route routeAnnotation = methode.getAnnotation(Route.class);
-                    String fullUrl = baseUrl + routeAnnotation.value();
-                    mapping.put(fullUrl, methode);
-                }
-            }
-        }
-        return mapping;
-    }
-
-    // exécuter méthode annotée @Route
-    public static String executerRoute(Class<?> controllerClass, String routePath) {
-        try {
-            Object instance = controllerClass.getDeclaredConstructor().newInstance();
-
-            for (Method method : controllerClass.getDeclaredMethods()) {
-                if (method.isAnnotationPresent(Route.class)) {
-
-                    Route r = method.getAnnotation(Route.class);
-
-                    if (r.value().equals(routePath)) {
-                        Object retour = method.invoke(instance);
-
-                        // Vérifier que c'est une chaîne
-                        if (retour instanceof String) {
-                            return (String) retour;
-                        } else {
-                            return "Erreur : la méthode " + method.getName() +
-                                    " ne retourne pas une chaîne.";
-                        }
+                    if (c.isAnnotationPresent(Controller.class)) {
+                        list.add(c);
                     }
+
+                } catch (Exception ignored) {
                 }
             }
-
-            return "Aucune méthode trouvée pour la route : " + routePath;
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            return "Erreur lors de l'exécution : " + e.getMessage();
         }
     }
 }
