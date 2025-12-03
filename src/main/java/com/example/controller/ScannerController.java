@@ -2,29 +2,47 @@ package com.example.controller;
 
 import java.io.File;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.net.URL;
 import java.util.*;
 
 import com.example.annotation.Controller;
+import com.example.annotation.Request;
 import com.example.annotation.Route;
 
 public class ScannerController {
 
     public static class RouteInfo {
-        public String url;
-        public boolean dynamic;
-        public Method method;
-        public Class<?> controllerClass;
-        public List<String> pathVariables;
-
-        public RouteInfo(String url, boolean dynamic, Method m, Class<?> c, List<String> vars) {
-            this.url = url;
-            this.dynamic = dynamic;
-            this.method = m;
-            this.controllerClass = c;
-            this.pathVariables = vars;
-        }
+    public String url;
+    public boolean dynamic;
+    public Method method;
+    public Class<?> controllerClass;
+    public List<String> pathVariables;
+    public Map<String, String> requestParamNames; // Nouveau: pour stocker les noms des paramètres @Request
+    
+    public RouteInfo(String url, boolean dynamic, Method m, Class<?> c, List<String> vars) {
+        this.url = url;
+        this.dynamic = dynamic;
+        this.method = m;
+        this.controllerClass = c;
+        this.pathVariables = vars;
+        this.requestParamNames = extractRequestParamNames(m); // Initialisation
     }
+    
+    private Map<String, String> extractRequestParamNames(Method method) {
+        Map<String, String> paramMap = new HashMap<>();
+        Parameter[] parameters = method.getParameters();
+        
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            if (param.isAnnotationPresent(Request.class)) {
+                String annotationValue = param.getAnnotation(Request.class).value();
+                paramMap.put(param.getName(), annotationValue);
+            }
+        }
+        return paramMap;
+    }
+}
 
     /** Retourne une liste structurée de toutes les routes */
     public static List<RouteInfo> scanRoutes(String basePackage) {
