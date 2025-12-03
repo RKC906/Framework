@@ -5,6 +5,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.*;
 
+import com.example.annotation.Request;
 import com.example.classe.Caste;
 import com.example.classe.ModelVue;
 import com.example.controller.ScannerController;
@@ -137,38 +138,59 @@ public class UrlServlet extends HttpServlet {
         return null;
     }
 
-    // injection automatique compatible Caste
-    private Object[] injectParams(HttpServletRequest req, Method method) {
-
-        Parameter[] params = method.getParameters();
-        Object[] values = new Object[params.length];
-
-        Map<String, String> pathVars = (Map<String, String>) req.getAttribute("pathParams");
-
-        Map<String, String[]> form = req.getParameterMap();
-
-        for (int i = 0; i < params.length; i++) {
-
-            String name = params[i].getName();
-            Class<?> type = params[i].getType();
-
-            // Paramètre dynamique {id}
-            if (pathVars != null && pathVars.containsKey(name)) {
-                values[i] = new Caste(pathVars.get(name), type).getTypedValue();
+   // injection automatique compatible Caste avec support @Request
+private Object[] injectParams(HttpServletRequest req, Method method) {
+    
+    Parameter[] params = method.getParameters();
+    Object[] values = new Object[params.length];
+    
+    Map<String, String> pathVars = (Map<String, String>) req.getAttribute("pathParams");
+    Map<String, String[]> form = req.getParameterMap();
+    
+    for (int i = 0; i < params.length; i++) {
+        
+        Parameter param = params[i];
+        String paramName = param.getName();
+        Class<?> type = param.getType();
+        
+        // Vérifier si le paramètre a l'annotation @Request
+        if (param.isAnnotationPresent(Request.class)) {
+            String requestParamName = param.getAnnotation(Request.class).value();
+            
+            // Chercher dans les paramètres de requête avec le nom spécifié
+            if (form.containsKey(requestParamName)) {
+                values[i] = new Caste(form.get(requestParamName)[0], type).getTypedValue();
                 continue;
             }
-
-            // Paramètres de formulaire
-            if (form.containsKey(name)) {
-                values[i] = new Caste(form.get(name)[0], type).getTypedValue();
+            
+            // Chercher dans les variables de chemin avec le nom spécifié
+            if (pathVars != null && pathVars.containsKey(requestParamName)) {
+                values[i] = new Caste(pathVars.get(requestParamName), type).getTypedValue();
                 continue;
             }
-
+            
             values[i] = null;
+            continue;
         }
-
-        return values;
+        
+        // Code original (sans annotation) reste inchangé
+        // Paramètre dynamique {id}
+        if (pathVars != null && pathVars.containsKey(paramName)) {
+            values[i] = new Caste(pathVars.get(paramName), type).getTypedValue();
+            continue;
+        }
+        
+        // Paramètres de formulaire
+        if (form.containsKey(paramName)) {
+            values[i] = new Caste(form.get(paramName)[0], type).getTypedValue();
+            continue;
+        }
+        
+        values[i] = null;
     }
+    
+    return values;
+}
 
     private String toJson(Object obj) {
         if (obj instanceof Map<?, ?> map) {
