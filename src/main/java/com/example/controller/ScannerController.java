@@ -2,118 +2,71 @@ package com.example.controller;
 
 import java.io.File;
 import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
 import java.net.URL;
 import java.util.*;
 
 import com.example.annotation.Controller;
-import com.example.annotation.Request;
 import com.example.annotation.Route;
+import com.example.classe.RouteInfo;
 
 public class ScannerController {
 
-    public static class RouteInfo {
-    public String url;
-    public boolean dynamic;
-    public Method method;
-    public Class<?> controllerClass;
-    public List<String> pathVariables;
-    public Map<String, String> requestParamNames; // Nouveau: pour stocker les noms des paramètres @Request
-    
-    public RouteInfo(String url, boolean dynamic, Method m, Class<?> c, List<String> vars) {
-        this.url = url;
-        this.dynamic = dynamic;
-        this.method = m;
-        this.controllerClass = c;
-        this.pathVariables = vars;
-        this.requestParamNames = extractRequestParamNames(m); // Initialisation
-    }
-    
-    private Map<String, String> extractRequestParamNames(Method method) {
-        Map<String, String> paramMap = new HashMap<>();
-        Parameter[] parameters = method.getParameters();
-        
-        for (int i = 0; i < parameters.length; i++) {
-            Parameter param = parameters[i];
-            if (param.isAnnotationPresent(Request.class)) {
-                String annotationValue = param.getAnnotation(Request.class).value();
-                paramMap.put(param.getName(), annotationValue);
-            }
-        }
-        return paramMap;
-    }
-}
-
     /** Retourne une liste structurée de toutes les routes */
     public static List<RouteInfo> scanRoutes(String basePackage) {
-        List<RouteInfo> list = new ArrayList<>();
+        List<RouteInfo> routes = new ArrayList<>();
 
-        for (Class<?> controller : trouverControllers(basePackage)) {
+        for (Class<?> controllerClass : trouverControllers(basePackage)) {
+            try {
+                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
+                String baseUrl = controllerClass.getAnnotation(Controller.class).value();
 
-            String baseUrl = controller.getAnnotation(Controller.class).value();
+                for (Method method : controllerClass.getDeclaredMethods()) {
+                    if (method.isAnnotationPresent(Route.class)) {
+                        String methodUrl = method.getAnnotation(Route.class).value();
+                        String fullUrl = baseUrl + methodUrl;
 
-            for (Method m : controller.getDeclaredMethods()) {
-                if (m.isAnnotationPresent(Route.class)) {
-
-                    String u = baseUrl + m.getAnnotation(Route.class).value();
-
-                    boolean dynamic = u.contains("{");
-
-                    List<String> vars = new ArrayList<>();
-                    if (dynamic) {
-                        for (String part : u.split("/")) {
-                            if (part.startsWith("{") && part.endsWith("}")) {
-                                vars.add(part.substring(1, part.length() - 1));
-                            }
-                        }
+                        RouteInfo route = new RouteInfo(controllerInstance, method, fullUrl);
+                        routes.add(route);
                     }
-
-                    list.add(new RouteInfo(u, dynamic, m, controller, vars));
                 }
+            } catch (Exception e) {
+                System.err.println("Erreur lors de l'instanciation du contrôleur " +
+                        controllerClass.getName() + ": " + e.getMessage());
             }
         }
-        return list;
+
+        return routes;
     }
 
-    // === Trouver les classes contrôleurs ===
+    // === Trouver les classes contrôleurs (inchangé) ===
     public static List<Class<?>> trouverControllers(String basePackage) {
-
         List<Class<?>> classesControllers = new ArrayList<>();
-
         try {
             String chemin = basePackage.replace('.', '/');
             URL resource = Thread.currentThread().getContextClassLoader().getResource(chemin);
-
             if (resource != null) {
                 File repertoire = new File(resource.getFile());
                 scannerRepertoire(repertoire, basePackage, classesControllers);
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         }
-
         return classesControllers;
     }
 
     private static void scannerRepertoire(File rep, String pkg, List<Class<?>> list) {
         if (!rep.exists() || !rep.isDirectory())
             return;
-
         for (File f : rep.listFiles()) {
-
             if (f.isDirectory()) {
                 scannerRepertoire(f, pkg + "." + f.getName(), list);
             } else if (f.getName().endsWith(".class")) {
-
                 String nom = f.getName().replace(".class", "");
                 try {
                     Class<?> c = Class.forName(pkg + "." + nom);
-
                     if (c.isAnnotationPresent(Controller.class)) {
                         list.add(c);
                     }
-
                 } catch (Exception ignored) {
                 }
             }

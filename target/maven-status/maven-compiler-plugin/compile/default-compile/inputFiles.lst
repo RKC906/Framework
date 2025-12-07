@@ -1,9 +1,12 @@
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/annotation/Get.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/annotation/Post.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/annotation/Route.java
+/home/cedric/Documents/GitHub/Framework/src/main/java/com/example/classe/ModelVue.java
+/home/cedric/Documents/GitHub/Framework/src/main/java/com/example/classe/Caste.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/controller/ScannerController.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/url/UrlServlet.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/Main.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/controller/AnnotationController.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/annotation/Controller.java
 /home/cedric/Documents/GitHub/Framework/src/main/java/com/example/RouteScanner.java
+/home/cedric/Documents/GitHub/Framework/src/main/java/com/example/annotation/Request.java
