@@ -5,69 +5,76 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.*;
 
-import com.example.annotation.Controller;
-import com.example.annotation.Route;
-import com.example.classe.RouteInfo;
+import com.example.classe.*;
+import com.example.annotation.*;
 
 public class ScannerController {
 
-    /** Retourne une liste structurée de toutes les routes */
-    public static List<RouteInfo> scanRoutes(String basePackage) {
-        List<RouteInfo> routes = new ArrayList<>();
+    public static Map<String, List<RouteInfo>> scan(String basePackage) throws Exception {
+        Map<String, List<RouteInfo>> routes = new HashMap<>();
 
-        for (Class<?> controllerClass : trouverControllers(basePackage)) {
-            try {
-                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-                String baseUrl = controllerClass.getAnnotation(Controller.class).value();
+        for (Class<?> clazz : findControllers(basePackage)) {
+            Object controller = clazz.getDeclaredConstructor().newInstance();
+            String baseUrl = clazz.getAnnotation(Controller.class).value();
 
-                for (Method method : controllerClass.getDeclaredMethods()) {
-                    if (method.isAnnotationPresent(Route.class)) {
-                        String methodUrl = method.getAnnotation(Route.class).value();
-                        String fullUrl = baseUrl + methodUrl;
-
-                        RouteInfo route = new RouteInfo(controllerInstance, method, fullUrl);
-                        routes.add(route);
-                    }
+            for (Method method : clazz.getDeclaredMethods()) {
+                RouteInfo route = createRoute(controller, method, baseUrl);
+                if (route != null) {
+                    String url = route.getUrl();
+                    routes.computeIfAbsent(url, k -> new ArrayList<>()).add(route);
                 }
-            } catch (Exception e) {
-                System.err.println("Erreur lors de l'instanciation du contrôleur " +
-                        controllerClass.getName() + ": " + e.getMessage());
             }
         }
 
         return routes;
     }
 
-    // === Trouver les classes contrôleurs (inchangé) ===
-    public static List<Class<?>> trouverControllers(String basePackage) {
-        List<Class<?>> classesControllers = new ArrayList<>();
-        try {
-            String chemin = basePackage.replace('.', '/');
-            URL resource = Thread.currentThread().getContextClassLoader().getResource(chemin);
-            if (resource != null) {
-                File repertoire = new File(resource.getFile());
-                scannerRepertoire(repertoire, basePackage, classesControllers);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+    private static RouteInfo createRoute(Object controller, Method method, String baseUrl) {
+        String httpMethod = null;
+        String path = null;
+
+        if (method.isAnnotationPresent(Get.class)) {
+            httpMethod = "GET";
+            path = method.getAnnotation(Get.class).value();
+        } else if (method.isAnnotationPresent(Post.class)) {
+            httpMethod = "POST";
+            path = method.getAnnotation(Post.class).value();
+        } else if (method.isAnnotationPresent(Route.class)) {
+            httpMethod = "GET"; // Par défaut
+            path = method.getAnnotation(Route.class).value();
         }
-        return classesControllers;
+
+        if (path != null) {
+            return new RouteInfo(controller, method, baseUrl + path, httpMethod);
+        }
+
+        return null;
     }
 
-    private static void scannerRepertoire(File rep, String pkg, List<Class<?>> list) {
-        if (!rep.exists() || !rep.isDirectory())
+    private static List<Class<?>> findControllers(String basePackage) throws Exception {
+        List<Class<?>> controllers = new ArrayList<>();
+        String path = basePackage.replace('.', '/');
+        URL url = Thread.currentThread().getContextClassLoader().getResource(path);
+
+        if (url != null) {
+            findClasses(new File(url.getFile()), basePackage, controllers);
+        }
+
+        return controllers;
+    }
+
+    private static void findClasses(File dir, String pkg, List<Class<?>> list) throws Exception {
+        if (!dir.exists())
             return;
-        for (File f : rep.listFiles()) {
-            if (f.isDirectory()) {
-                scannerRepertoire(f, pkg + "." + f.getName(), list);
-            } else if (f.getName().endsWith(".class")) {
-                String nom = f.getName().replace(".class", "");
-                try {
-                    Class<?> c = Class.forName(pkg + "." + nom);
-                    if (c.isAnnotationPresent(Controller.class)) {
-                        list.add(c);
-                    }
-                } catch (Exception ignored) {
+
+        for (File file : dir.listFiles()) {
+            if (file.isDirectory()) {
+                findClasses(file, pkg + "." + file.getName(), list);
+            } else if (file.getName().endsWith(".class")) {
+                String className = pkg + "." + file.getName().replace(".class", "");
+                Class<?> clazz = Class.forName(className);
+                if (clazz.isAnnotationPresent(Controller.class)) {
+                    list.add(clazz);
                 }
             }
         }
