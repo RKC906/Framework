@@ -5,11 +5,11 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.*;
 
-import com.example.annotation.Request;
+import com.example.classe.RouteInfo;
 import com.example.classe.Caste;
 import com.example.classe.ModelVue;
 import com.example.controller.ScannerController;
-import com.example.controller.ScannerController.RouteInfo;
+import com.example.annotation.Request;
 
 import jakarta.servlet.*;
 import jakarta.servlet.annotation.WebServlet;
@@ -19,178 +19,185 @@ import jakarta.servlet.http.*;
 public class UrlServlet extends HttpServlet {
 
     private RequestDispatcher defaultDispatcher;
-
-    private List<RouteInfo> routes;
+    private List<RouteInfo> routes; // Utilisez RouteInfo
 
     @Override
     public void init() {
         defaultDispatcher = getServletContext().getNamedDispatcher("default");
-
         String basePackage = getServletConfig().getInitParameter("base-package");
-
         routes = ScannerController.scanRoutes(basePackage);
 
         System.out.println("=== ROUTES DETECTEES ===");
         for (RouteInfo r : routes) {
-            System.out.println(r.url + "  -->  " + r.method.getDeclaringClass().getName()
-                    + "." + r.method.getName());
+            System.out.println(r.getUrlPattern() + " -> " +
+                    r.getMethod().getDeclaringClass().getSimpleName() +
+                    "." + r.getMethod().getName());
         }
     }
 
-    @Override
-    protected void service(HttpServletRequest req, HttpServletResponse res)
-            throws ServletException, IOException {
-
-        String path = req.getRequestURI().substring(req.getContextPath().length());
-
-        if (getServletContext().getResource(path) != null) {
-            defaultDispatcher.forward(req, res);
-            return;
-        }
-
-        handleRoute(req, res, path);
-    }
-
-    private void handleRoute(HttpServletRequest req, HttpServletResponse res, String path)
-            throws IOException, ServletException {
-
-        RouteInfo info = findRoute(path, req);
-
-        if (info == null) {
-            sendError(res, 404, "Route inconnue : " + path);
-            return;
-        }
-
-        try {
-            Object controller = info.controllerClass.getDeclaredConstructor().newInstance();
-
-            Object[] args = injectParams(req, info.method);
-
-            Object result = info.method.invoke(controller, args);
-
-            // === ModelVue ===
-            if (result instanceof ModelVue mv) {
-                if (mv.getData() != null)
-                    mv.getData().forEach(req::setAttribute);
-
-                req.getRequestDispatcher(mv.getView()).forward(req, res);
-                return;
-            }
-
-            // === JSON ===
-            if (result instanceof Map || result instanceof Iterable || result instanceof Object[]) {
-                res.setContentType("application/json");
-                res.getWriter().println(toJson(result));
-                return;
-            }
-
-            // === Void ===
-            if (info.method.getReturnType() == void.class) {
-                res.getWriter().println("Action exécutée.");
-                return;
-            }
-
-            // === String ===
-            res.setContentType("text/html");
-            res.getWriter().println(result);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            sendError(res, 500, e.getMessage());
-        }
-    }
-
-    private RouteInfo findRoute(String path, HttpServletRequest req) {
-
-        // 1) Chercher route exacte
-        for (RouteInfo r : routes) {
-            if (!r.dynamic && r.url.equals(path)) {
-                return r;
-            }
-        }
-
-        // 2) Chercher route dynamique
-        for (RouteInfo r : routes) {
-            if (!r.dynamic)
-                continue;
-
-            String regex = "^" + r.url.replaceAll("\\{[^/]+}", "([^/]+)") + "$";
-
-            if (path.matches(regex)) {
-
-                Map<String, String> params = new HashMap<>();
-
-                String[] urlParts = r.url.split("/");
-                String[] pathParts = path.split("/");
-
-                for (int i = 0; i < urlParts.length; i++) {
-                    if (urlParts[i].startsWith("{")) {
-                        String name = urlParts[i].substring(1, urlParts[i].length() - 1);
-                        params.put(name, pathParts[i]);
+    private RouteInfo findAndPrepareRoute(String path, HttpServletRequest req) {
+        for (RouteInfo route : routes) {
+            if (route.isDynamic()) {
+                // Route dynamique avec variables
+                if (matchDynamicRoute(route, path)) {
+                    // Ajouter les paramètres de requête
+                    Enumeration<String> paramNames = req.getParameterNames();
+                    while (paramNames.hasMoreElements()) {
+                        String name = paramNames.nextElement();
+                        route.addRequestParameter(name, req.getParameterValues(name));
                     }
+                    return route;
                 }
-
-                req.setAttribute("pathParams", params);
-                return r;
+            } else {
+                // Route statique
+                if (route.getUrlPattern().equals(path)) {
+                    // Ajouter les paramètres de requête
+                    Enumeration<String> paramNames = req.getParameterNames();
+                    while (paramNames.hasMoreElements()) {
+                        String name = paramNames.nextElement();
+                        route.addRequestParameter(name, req.getParameterValues(name));
+                    }
+                    return route;
+                }
             }
         }
-
         return null;
     }
 
-   // injection automatique compatible Caste avec support @Request
-private Object[] injectParams(HttpServletRequest req, Method method) {
-    
-    Parameter[] params = method.getParameters();
-    Object[] values = new Object[params.length];
-    
-    Map<String, String> pathVars = (Map<String, String>) req.getAttribute("pathParams");
-    Map<String, String[]> form = req.getParameterMap();
-    
-    for (int i = 0; i < params.length; i++) {
-        
-        Parameter param = params[i];
-        String paramName = param.getName();
-        Class<?> type = param.getType();
-        
-        // Vérifier si le paramètre a l'annotation @Request
-        if (param.isAnnotationPresent(Request.class)) {
-            String requestParamName = param.getAnnotation(Request.class).value();
-            
-            // Chercher dans les paramètres de requête avec le nom spécifié
-            if (form.containsKey(requestParamName)) {
-                values[i] = new Caste(form.get(requestParamName)[0], type).getTypedValue();
-                continue;
+    private boolean matchDynamicRoute(RouteInfo route, String path) {
+        String pattern = route.getUrlPattern();
+        String[] patternParts = pattern.split("/");
+        String[] pathParts = path.split("/");
+
+        if (patternParts.length != pathParts.length) {
+            return false;
+        }
+
+        for (int i = 0; i < patternParts.length; i++) {
+            String patternPart = patternParts[i];
+            String pathPart = pathParts[i];
+
+            if (patternPart.startsWith("{") && patternPart.endsWith("}")) {
+                // Variable dynamique - extraire le nom et la valeur
+                String varName = patternPart.substring(1, patternPart.length() - 1);
+                route.addPathVariable(varName, pathPart);
+            } else if (!patternPart.equals(pathPart)) {
+                // Partie statique ne correspond pas
+                return false;
             }
-            
-            // Chercher dans les variables de chemin avec le nom spécifié
-            if (pathVars != null && pathVars.containsKey(requestParamName)) {
-                values[i] = new Caste(pathVars.get(requestParamName), type).getTypedValue();
-                continue;
-            }
-            
-            values[i] = null;
-            continue;
         }
-        
-        // Code original (sans annotation) reste inchangé
-        // Paramètre dynamique {id}
-        if (pathVars != null && pathVars.containsKey(paramName)) {
-            values[i] = new Caste(pathVars.get(paramName), type).getTypedValue();
-            continue;
-        }
-        
-        // Paramètres de formulaire
-        if (form.containsKey(paramName)) {
-            values[i] = new Caste(form.get(paramName)[0], type).getTypedValue();
-            continue;
-        }
-        
-        values[i] = null;
+
+        return true;
     }
-    
-    return values;
-}
+
+    private Object[] injectParameters(RouteInfo route, HttpServletRequest req) {
+        Method method = route.getMethod();
+        Parameter[] parameters = method.getParameters();
+        Object[] values = new Object[parameters.length];
+
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            Class<?> type = param.getType();
+            String paramName = param.getName();
+
+            // Vérifier si le paramètre a l'annotation @Request
+            if (param.isAnnotationPresent(Request.class)) {
+                String requestName = param.getAnnotation(Request.class).value();
+                values[i] = resolveParameterValue(route, req, requestName, type);
+            } else {
+                // Sans annotation, utiliser le nom du paramètre
+                values[i] = resolveParameterValue(route, req, paramName, type);
+            }
+        }
+
+        return values;
+    }
+
+    private Object resolveParameterValue(RouteInfo route, HttpServletRequest req,
+            String paramName, Class<?> type) {
+        // 1. Chercher dans les variables de chemin
+        String pathValue = route.getPathVariable(paramName);
+        if (pathValue != null) {
+            return new Caste(pathValue, type).getTypedValue();
+        }
+
+        // 2. Chercher dans les paramètres de requête
+        String[] requestValues = route.getRequestParameter(paramName);
+        if (requestValues != null && requestValues.length > 0) {
+            return new Caste(requestValues[0], type).getTypedValue();
+        }
+
+        // 3. Chercher dans les attributs de requête
+        Object attributeValue = req.getAttribute(paramName);
+        if (attributeValue != null && type.isInstance(attributeValue)) {
+            return type.cast(attributeValue);
+        }
+
+        // 4. Pour les types primitifs, retourner une valeur par défaut
+        if (type.isPrimitive()) {
+            return getDefaultPrimitiveValue(type);
+        }
+
+        // 5. Sinon, null
+        return null;
+    }
+
+    private Object getDefaultPrimitiveValue(Class<?> type) {
+        if (type == int.class)
+            return 0;
+        if (type == long.class)
+            return 0L;
+        if (type == double.class)
+            return 0.0;
+        if (type == float.class)
+            return 0.0f;
+        if (type == boolean.class)
+            return false;
+        if (type == byte.class)
+            return (byte) 0;
+        if (type == short.class)
+            return (short) 0;
+        if (type == char.class)
+            return '\0';
+        return null;
+    }
+
+    private void processResult(Object result, HttpServletRequest req,
+            HttpServletResponse res)
+            throws ServletException, IOException {
+
+        // 1. ModelVue -> forward vers une JSP
+        if (result instanceof ModelVue) {
+            ModelVue mv = (ModelVue) result;
+            if (mv.getData() != null) {
+                mv.getData().forEach(req::setAttribute);
+            }
+            req.getRequestDispatcher(mv.getView()).forward(req, res);
+            return;
+        }
+
+        // 2. Map, List ou Array -> JSON
+        if (result instanceof Map || result instanceof Iterable || result instanceof Object[]) {
+            res.setContentType("application/json");
+            res.getWriter().println(toJson(result));
+            return;
+        }
+
+        // 3. Void -> message de confirmation
+        if (result == null &&
+                req.getAttribute("methodReturnType") instanceof Class &&
+                ((Class<?>) req.getAttribute("methodReturnType")) == void.class) {
+            res.setContentType("text/html");
+            res.getWriter().println("Action exécutée avec succès.");
+            return;
+        }
+
+        // 4. String ou autre -> texte HTML
+        res.setContentType("text/html");
+        if (result != null) {
+            res.getWriter().println(result.toString());
+        }
+    }
 
     private String toJson(Object obj) {
         if (obj instanceof Map<?, ?> map) {
@@ -199,29 +206,61 @@ private Object[] injectParams(HttpServletRequest req, Method method) {
             for (var e : map.entrySet()) {
                 if (i++ > 0)
                     sb.append(",");
-                sb.append("\"").append(e.getKey()).append("\":\"")
-                        .append(e.getValue()).append("\"");
+                sb.append("\"").append(e.getKey()).append("\":");
+                Object value = e.getValue();
+                if (value instanceof String) {
+                    sb.append("\"").append(value).append("\"");
+                } else {
+                    sb.append(value);
+                }
             }
             return sb.append("}").toString();
         }
+
         if (obj instanceof Iterable<?> it) {
             StringBuilder sb = new StringBuilder("[");
             int i = 0;
             for (var e : it) {
                 if (i++ > 0)
                     sb.append(",");
-                sb.append("\"").append(e).append("\"");
+                if (e instanceof String) {
+                    sb.append("\"").append(e).append("\"");
+                } else {
+                    sb.append(e);
+                }
             }
             return sb.append("]").toString();
         }
+
+        if (obj instanceof Object[] arr) {
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < arr.length; i++) {
+                if (i > 0)
+                    sb.append(",");
+                if (arr[i] instanceof String) {
+                    sb.append("\"").append(arr[i]).append("\"");
+                } else {
+                    sb.append(arr[i]);
+                }
+            }
+            return sb.append("]").toString();
+        }
+
         return "\"" + obj.toString() + "\"";
     }
 
     private void sendError(HttpServletResponse res, int code, String msg)
             throws IOException {
-
         res.setStatus(code);
         res.setContentType("text/html");
-        res.getWriter().println("<h1>Erreur " + code + "</h1><p>" + msg + "</p>");
+        res.getWriter().println(
+                "<!DOCTYPE html>" +
+                        "<html>" +
+                        "<head><title>Erreur " + code + "</title></head>" +
+                        "<body>" +
+                        "<h1>Erreur " + code + "</h1>" +
+                        "<p>" + msg + "</p>" +
+                        "</body>" +
+                        "</html>");
     }
 }
