@@ -5,22 +5,35 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.util.*;
 
-import com.example.classe.*;
 import com.example.annotation.*;
 
 public class ScannerController {
 
-    public static Map<String, List<RouteInfo>> scan(String basePackage) throws Exception {
-        Map<String, List<RouteInfo>> routes = new HashMap<>();
+    public static class RouteData {
+        public Object controller;
+        public Method method;
+        public String url;
+        public String httpMethod;
+
+        public RouteData(Object controller, Method method, String url, String httpMethod) {
+            this.controller = controller;
+            this.method = method;
+            this.url = url;
+            this.httpMethod = httpMethod;
+        }
+    }
+
+    public static Map<String, List<RouteData>> scan(String basePackage) throws Exception {
+        Map<String, List<RouteData>> routes = new HashMap<>();
 
         for (Class<?> clazz : findControllers(basePackage)) {
             Object controller = clazz.getDeclaredConstructor().newInstance();
             String baseUrl = clazz.getAnnotation(Controller.class).value();
 
             for (Method method : clazz.getDeclaredMethods()) {
-                RouteInfo route = createRoute(controller, method, baseUrl);
+                RouteData route = createRoute(controller, method, baseUrl);
                 if (route != null) {
-                    String url = route.getUrl();
+                    String url = route.url;
                     routes.computeIfAbsent(url, k -> new ArrayList<>()).add(route);
                 }
             }
@@ -29,7 +42,7 @@ public class ScannerController {
         return routes;
     }
 
-    private static RouteInfo createRoute(Object controller, Method method, String baseUrl) {
+    private static RouteData createRoute(Object controller, Method method, String baseUrl) {
         String httpMethod = null;
         String path = null;
 
@@ -45,7 +58,7 @@ public class ScannerController {
         }
 
         if (path != null) {
-            return new RouteInfo(controller, method, baseUrl + path, httpMethod);
+            return new RouteData(controller, method, baseUrl + path, httpMethod);
         }
 
         return null;
