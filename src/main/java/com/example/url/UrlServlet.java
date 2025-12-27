@@ -13,7 +13,8 @@ import com.example.annotation.Request;
 
 @WebServlet("/*")
 public class UrlServlet extends HttpServlet {
-    private Map<String, List<RouteInfo>> routes;
+    private Map<String, List<ScannerController.RouteData>> routes;
+    private Map<String, Map<String, String>> pathVarsCache = new HashMap<>();
 
     @Override
     public void init() throws ServletException {
@@ -29,7 +30,7 @@ public class UrlServlet extends HttpServlet {
     private void logRoutes() {
         System.out.println("=== ROUTES ===");
         routes.forEach((url, list) -> {
-            list.forEach(route -> System.out.println(route.getHttpMethod() + " " + url));
+            list.forEach(route -> System.out.println(route.httpMethod + " " + url));
         });
     }
 
@@ -46,7 +47,7 @@ public class UrlServlet extends HttpServlet {
         }
 
         // Trouver route
-        RouteInfo route = findRoute(path, req.getMethod());
+        ScannerController.RouteData route = findRoute(path, req.getMethod());
         if (route == null) {
             resp.sendError(404, "Not Found: " + path);
             return;
@@ -54,18 +55,19 @@ public class UrlServlet extends HttpServlet {
 
         // Exécuter
         try {
-            Object result = executeRoute(route, req, resp);
+            Object result = executeRoute(route, req, resp, path);
             handleResult(result, req, resp);
         } catch (Exception e) {
+            e.printStackTrace();
             resp.sendError(500, "Server Error: " + e.getMessage());
         }
     }
 
-    private RouteInfo findRoute(String path, String method) {
+    private ScannerController.RouteData findRoute(String path, String method) {
         // Route exacte
         if (routes.containsKey(path)) {
             return routes.get(path).stream()
-                    .filter(r -> r.getHttpMethod().equalsIgnoreCase(method))
+                    .filter(r -> r.httpMethod.equalsIgnoreCase(method))
                     .findFirst()
                     .orElse(null);
         }
@@ -73,9 +75,10 @@ public class UrlServlet extends HttpServlet {
         // Route dynamique
         for (String pattern : routes.keySet()) {
             if (matchPattern(pattern, path)) {
-                for (RouteInfo route : routes.get(pattern)) {
-                    if (route.getHttpMethod().equalsIgnoreCase(method)) {
-                        extractPathVars(route, pattern, path);
+                for (ScannerController.RouteData route : routes.get(pattern)) {
+                    if (route.httpMethod.equalsIgnoreCase(method)) {
+                        // Extraire et stocker les variables d'URL
+                        extractAndCachePathVars(pattern, path);
                         return route;
                     }
                 }
@@ -101,43 +104,164 @@ public class UrlServlet extends HttpServlet {
         return true;
     }
 
-    private void extractPathVars(RouteInfo route, String pattern, String path) {
+    private void extractAndCachePathVars(String pattern, String path) {
         String[] pParts = pattern.split("/");
         String[] rParts = path.split("/");
+        Map<String, String> vars = new HashMap<>();
 
         for (int i = 0; i < pParts.length; i++) {
             if (pParts[i].startsWith("{")) {
                 String name = pParts[i].substring(1, pParts[i].length() - 1);
-                route.addPathVar(name, rParts[i]);
+                vars.put(name, rParts[i]);
             }
         }
+
+        pathVarsCache.put(path, vars);
     }
 
-    private Object executeRoute(RouteInfo route, HttpServletRequest req, HttpServletResponse resp)
-            throws Exception {
+    private Object executeRoute(ScannerController.RouteData route,
+            HttpServletRequest req,
+            HttpServletResponse resp,
+            String path) throws Exception {
 
         // Préparer paramètres
-        Object[] args = prepareArgs(route, req);
+        Object[] args = prepareArgs(route, req, path);
 
         // Exécuter méthode
-        return route.getMethod().invoke(route.getController(), args);
+        return route.method.invoke(route.controller, args);
     }
 
-    private Object[] prepareArgs(RouteInfo route, HttpServletRequest req) {
-        Parameter[] params = route.getMethod().getParameters();
+    private Object[] prepareArgs(ScannerController.RouteData route,
+            HttpServletRequest req,
+            String path) {
+        Parameter[] params = route.method.getParameters();
         Object[] args = new Object[params.length];
 
-        for (int i = 0; i < params.length; i++) {
-            Parameter param = params[i];
-            String name = getParamName(param);
-            Class<?> type = param.getType();
+        // Récupérer toutes les valeurs disponibles
+        Map<String, String> pathVars = pathVarsCache.get(path);
+        Map<String, String[]> reqParams = req.getParameterMap();
+        Map<String, Object> allValues = new HashMap<>();
 
-            // Chercher valeur
-            String value = findValue(name, route, req);
-            args[i] = convertValue(value, type);
+        // 1. Ajouter les variables d'URL
+        if (pathVars != null) {
+            pathVars.forEach((key, value) -> allValues.put(key, value));
+        }
+
+        // 2. Ajouter les paramètres de requête
+        reqParams.forEach((key, values) -> {
+            if (values != null && values.length > 0) {
+                allValues.put(key, values[0]); // Prendre première valeur
+            }
+        });
+
+        // 3. Vérifier si un paramètre est Map<String, Object>
+        boolean hasMapParam = false;
+        for (Parameter param : params) {
+            if (isMapStringObject(param)) {
+                hasMapParam = true;
+                break;
+            }
+        }
+
+        if (hasMapParam) {
+            // Mode Map: créer une Map avec TOUTES les valeurs converties
+            Map<String, Object> allParamsMap = new HashMap<>();
+
+            // Convertir toutes les valeurs selon leur type
+            for (Map.Entry<String, Object> entry : allValues.entrySet()) {
+                String key = entry.getKey();
+                Object value = entry.getValue();
+
+                // Trouver le type attendu pour ce paramètre
+                Class<?> expectedType = findExpectedType(key, params);
+
+                if (value instanceof String) {
+                    allParamsMap.put(key, convertValue((String) value, expectedType));
+                } else {
+                    allParamsMap.put(key, value);
+                }
+            }
+
+            // Ajouter les attributs de requête
+            Enumeration<String> attrNames = req.getAttributeNames();
+            while (attrNames.hasMoreElements()) {
+                String name = attrNames.nextElement();
+                allParamsMap.put(name, req.getAttribute(name));
+            }
+
+            // Assigner les arguments
+            for (int i = 0; i < params.length; i++) {
+                Parameter param = params[i];
+
+                if (isMapStringObject(param)) {
+                    // C'est le paramètre Map, lui passer tout
+                    args[i] = allParamsMap;
+                } else {
+                    // Paramètre individuel
+                    String name = getParamName(param);
+                    Object value = allParamsMap.get(name);
+
+                    if (value != null) {
+                        args[i] = value;
+                    } else {
+                        args[i] = getDefaultValue(param.getType());
+                    }
+                }
+            }
+        } else {
+            // Mode normal: paramètres individuels
+            for (int i = 0; i < params.length; i++) {
+                Parameter param = params[i];
+                String name = getParamName(param);
+                Class<?> type = param.getType();
+
+                // Chercher valeur
+                Object value = null;
+
+                // 1. Variables d'URL
+                if (pathVars != null && pathVars.containsKey(name)) {
+                    value = pathVars.get(name);
+                }
+                // 2. Paramètres de requête
+                else if (reqParams.containsKey(name)) {
+                    String[] values = reqParams.get(name);
+                    if (values != null && values.length > 0) {
+                        value = values[0];
+                    }
+                }
+
+                if (value instanceof String) {
+                    args[i] = convertValue((String) value, type);
+                } else {
+                    args[i] = getDefaultValue(type);
+                }
+            }
         }
 
         return args;
+    }
+
+    private boolean isMapStringObject(Parameter param) {
+        Class<?> type = param.getType();
+        if (Map.class.isAssignableFrom(type)) {
+            // Vérifier si c'est Map<String, Object> ou Map<?, ?>
+            String typeName = param.getParameterizedType().getTypeName();
+            return typeName.contains("Map<") &&
+                    (typeName.contains("String, Object") ||
+                            typeName.contains("String,Object") ||
+                            typeName.equals("java.util.Map"));
+        }
+        return false;
+    }
+
+    private Class<?> findExpectedType(String paramName, Parameter[] params) {
+        for (Parameter param : params) {
+            String name = getParamName(param);
+            if (name.equals(paramName)) {
+                return param.getType();
+            }
+        }
+        return String.class; // Par défaut
     }
 
     private String getParamName(Parameter param) {
@@ -145,21 +269,6 @@ public class UrlServlet extends HttpServlet {
             return param.getAnnotation(Request.class).value();
         }
         return param.getName();
-    }
-
-    private String findValue(String name, RouteInfo route, HttpServletRequest req) {
-        // 1. Variables de chemin
-        if (route.getPathVars().containsKey(name)) {
-            return route.getPathVars().get(name);
-        }
-
-        // 2. Paramètres de requête
-        String param = req.getParameter(name);
-        if (param != null) {
-            return param;
-        }
-
-        return null;
     }
 
     private Object convertValue(String value, Class<?> type) {
@@ -181,6 +290,12 @@ public class UrlServlet extends HttpServlet {
             return 0.0;
         if (type == float.class)
             return 0.0f;
+        if (type == byte.class)
+            return (byte) 0;
+        if (type == short.class)
+            return (short) 0;
+        if (type == char.class)
+            return '\0';
         return null;
     }
 
@@ -198,12 +313,17 @@ public class UrlServlet extends HttpServlet {
             if (str.startsWith("redirect:")) {
                 resp.sendRedirect(str.substring(9));
             } else {
+                resp.setContentType("text/html");
                 resp.getWriter().print(str);
             }
         } else if (result instanceof Map) {
             resp.setContentType("application/json");
             resp.getWriter().print(toJson((Map<?, ?>) result));
+        } else if (result instanceof Iterable || result instanceof Object[]) {
+            resp.setContentType("application/json");
+            resp.getWriter().print(toJsonArray(result));
         } else if (result != null) {
+            resp.setContentType("text/html");
             resp.getWriter().print(result.toString());
         }
     }
@@ -217,16 +337,57 @@ public class UrlServlet extends HttpServlet {
                 sb.append(",");
             first = false;
 
-            sb.append("\"").append(entry.getKey()).append("\":");
-            Object value = entry.getValue();
-
-            if (value instanceof String) {
-                sb.append("\"").append(value).append("\"");
-            } else {
-                sb.append(value);
-            }
+            sb.append("\"").append(escapeJson(entry.getKey().toString())).append("\":");
+            sb.append(toJsonValue(entry.getValue()));
         }
 
         return sb.append("}").toString();
+    }
+
+    private String toJsonArray(Object obj) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+
+        if (obj instanceof Iterable<?>) {
+            for (Object item : (Iterable<?>) obj) {
+                if (!first)
+                    sb.append(",");
+                first = false;
+                sb.append(toJsonValue(item));
+            }
+        } else if (obj instanceof Object[]) {
+            for (Object item : (Object[]) obj) {
+                if (!first)
+                    sb.append(",");
+                first = false;
+                sb.append(toJsonValue(item));
+            }
+        }
+
+        return sb.append("]").toString();
+    }
+
+    private String toJsonValue(Object value) {
+        if (value == null) {
+            return "null";
+        } else if (value instanceof String) {
+            return "\"" + escapeJson((String) value) + "\"";
+        } else if (value instanceof Number || value instanceof Boolean) {
+            return value.toString();
+        } else if (value instanceof Map) {
+            return toJson((Map<?, ?>) value);
+        } else if (value instanceof Iterable || value instanceof Object[]) {
+            return toJsonArray(value);
+        } else {
+            return "\"" + escapeJson(value.toString()) + "\"";
+        }
+    }
+
+    private String escapeJson(String str) {
+        return str.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 }
