@@ -19,6 +19,7 @@ public class ScannerController {
         public boolean hasMapParam = false;
         public boolean hasComplexObject = false;
         public boolean returnsJson = false;
+        public boolean hasUploadParam = false;
 
         public RouteData(Object controller, Method method, String url, String httpMethod) {
             this.controller = controller;
@@ -44,7 +45,18 @@ public class ScannerController {
                         hasMapParam = true;
                     }
                 }
-                // Vérifier objets complexes
+                // Vérifier UploadedFile
+                else if (type.getName().equals("com.example.classe.UploadedFile")) {
+                    hasUploadParam = true;
+                }
+                // Vérifier List<UploadedFile>
+                else if (type.equals(List.class)) {
+                    String typeName = param.getParameterizedType().getTypeName();
+                    if (typeName.contains("UploadedFile")) {
+                        hasUploadParam = true;
+                    }
+                }
+                // Vérifier objets complexes (non-upload)
                 else if (isComplexObject(type)) {
                     hasComplexObject = true;
                 }
@@ -52,7 +64,6 @@ public class ScannerController {
         }
 
         private void analyzeReturnType(Method method) {
-            // Vérifier si la méthode a l'annotation @Json
             this.returnsJson = method.isAnnotationPresent(Json.class);
         }
 
@@ -64,6 +75,7 @@ public class ScannerController {
                     !type.equals(Boolean.class) &&
                     !type.equals(Long.class) &&
                     !type.equals(Float.class) &&
+                    !type.getName().equals("com.example.classe.UploadedFile") &&
                     !Map.class.isAssignableFrom(type) &&
                     !List.class.isAssignableFrom(type);
         }

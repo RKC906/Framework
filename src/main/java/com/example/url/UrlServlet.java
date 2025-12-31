@@ -40,6 +40,9 @@ public class UrlServlet extends HttpServlet {
                 if (route.returnsJson) {
                     System.out.print(" [@Json]");
                 }
+                if (route.hasUploadParam) {
+                    System.out.print(" [Upload]");
+                }
                 System.out.println();
             });
         });
@@ -57,18 +60,11 @@ public class UrlServlet extends HttpServlet {
             return;
         }
 
-        handleRoute(req, resp, path, method);
-    }
-
-    private void handleRoute(HttpServletRequest req, HttpServletResponse resp,
-            String path, String httpMethod)
-            throws IOException, ServletException {
-
-        ScannerController.RouteData route = findRoute(path, httpMethod, req);
+        ScannerController.RouteData route = findRoute(path, method, req);
 
         if (route == null) {
             if (hasRouteForUrl(path)) {
-                sendError(resp, 405, "Méthode " + httpMethod + " non autorisée pour " + path);
+                sendError(resp, 405, "Méthode " + method + " non autorisée pour " + path);
                 return;
             }
             sendError(resp, 404, "Route inconnue : " + path);
@@ -78,14 +74,11 @@ public class UrlServlet extends HttpServlet {
         try {
             Object result = executeRoute(route, req, path);
 
-            // CHANGEMENT: On garde VOTRE logique + on ajoute @Json
             if (route.returnsJson) {
-                // Si @Json est présent, on utilise VOTRE toJson() amélioré
                 resp.setContentType("application/json");
                 resp.setCharacterEncoding("UTF-8");
 
                 if (result instanceof ModelVue || result instanceof String) {
-                    // Pour ModelVue ou String avec @Json, on crée un objet JSON
                     Map<String, Object> jsonResult = new HashMap<>();
                     if (result instanceof ModelVue) {
                         ModelVue mv = (ModelVue) result;
@@ -98,21 +91,43 @@ public class UrlServlet extends HttpServlet {
                     }
                     resp.getWriter().print(toJson(jsonResult));
                 } else {
-                    // Pour Map, Iterable, etc. on utilise VOTRE logique
                     resp.getWriter().print(convertToJson(result));
                 }
             } else {
-                // Mode normal - VOTRE logique originale
                 handleResult(result, req, resp);
             }
 
         } catch (Exception e) {
             e.printStackTrace();
             sendError(resp, 500, "Erreur interne: " + e.getMessage());
+        } finally {
+            cleanupUploadedFiles(req);
         }
     }
 
-    // NOUVELLE méthode qui utilise VOTRE logique de conversion
+    // Nettoyage des fichiers uploadés
+    private void cleanupUploadedFiles(HttpServletRequest req) {
+        @SuppressWarnings("unchecked")
+        List<UploadedFile> filesToCleanup = (List<UploadedFile>) req.getAttribute("filesToCleanup");
+
+        if (filesToCleanup != null) {
+            for (UploadedFile file : filesToCleanup) {
+                file.cleanup();
+            }
+        }
+    }
+
+    // Stocker un fichier pour nettoyage
+    private void storeForCleanup(HttpServletRequest req, UploadedFile uploadedFile) {
+        @SuppressWarnings("unchecked")
+        List<UploadedFile> filesToCleanup = (List<UploadedFile>) req.getAttribute("filesToCleanup");
+        if (filesToCleanup == null) {
+            filesToCleanup = new ArrayList<>();
+            req.setAttribute("filesToCleanup", filesToCleanup);
+        }
+        filesToCleanup.add(uploadedFile);
+    }
+
     private String convertToJson(Object obj) {
         if (obj instanceof Map) {
             return toJson((Map<?, ?>) obj);
@@ -121,7 +136,6 @@ public class UrlServlet extends HttpServlet {
         } else if (obj instanceof Object[]) {
             return toJsonArray(obj);
         } else {
-            // Pour les objets simples, on utilise votre logique toJsonValue
             return toJsonValue(obj);
         }
     }
@@ -189,6 +203,7 @@ public class UrlServlet extends HttpServlet {
     }
 
     private void prepareRoute(ScannerController.RouteData route, HttpServletRequest req) {
+        // Stocker les paramètres normaux
         Map<String, String[]> params = new HashMap<>();
         Enumeration<String> paramNames = req.getParameterNames();
         while (paramNames.hasMoreElements()) {
@@ -239,7 +254,7 @@ public class UrlServlet extends HttpServlet {
 
     private Object[] prepareArgs(ScannerController.RouteData route,
             HttpServletRequest req,
-            String path) {
+            String path) throws IOException, ServletException {
         Parameter[] params = route.method.getParameters();
         Object[] args = new Object[params.length];
 
@@ -250,7 +265,19 @@ public class UrlServlet extends HttpServlet {
             reqParams = new HashMap<>();
         }
 
-        Map<String, Object> allValues = collectAllValues(route, pathVars, reqParams, req);
+        // Si la route a des paramètres upload, on doit parser multipart
+        if (route.hasUploadParam && isMultipartRequest(req)) {
+            parseMultipartRequest(req);
+        }
+
+        // Récupérer les fichiers uploadés
+        @SuppressWarnings("unchecked")
+        Map<String, UploadedFile> uploadedFiles = (Map<String, UploadedFile>) req.getAttribute("uploadedFiles");
+        if (uploadedFiles == null) {
+            uploadedFiles = new HashMap<>();
+        }
+
+        Map<String, Object> allValues = collectAllValues(route, pathVars, reqParams, uploadedFiles, req);
 
         if (route.hasMapParam) {
             for (int i = 0; i < params.length; i++) {
@@ -269,16 +296,112 @@ public class UrlServlet extends HttpServlet {
                 String name = getParamName(param);
                 Class<?> type = param.getType();
 
-                args[i] = getParameterValue(name, type, allValues, req);
+                args[i] = getParameterValue(name, type, allValues, req, uploadedFiles);
             }
         }
 
         return args;
     }
 
+    // Vérifier si c'est une requête multipart
+    private boolean isMultipartRequest(HttpServletRequest req) {
+        String contentType = req.getContentType();
+        return contentType != null &&
+                contentType.toLowerCase().startsWith("multipart/form-data");
+    }
+
+    // Parser une requête multipart - CORRIGÉ les exceptions
+    private void parseMultipartRequest(HttpServletRequest req) {
+        Map<String, String[]> textParams = new HashMap<>();
+        Map<String, UploadedFile> uploadedFiles = new HashMap<>();
+
+        try {
+            // Utiliser try-with-resources pour lire l'input stream
+            Collection<Part> parts = req.getParts();
+
+            for (Part part : parts) {
+                String name = part.getName();
+
+                if (part.getSubmittedFileName() != null && part.getSize() > 0) {
+                    // C'est un fichier
+                    UploadedFile uploadedFile = new UploadedFile(
+                            part.getSubmittedFileName(),
+                            part.getContentType(),
+                            part.getSize(),
+                            part.getInputStream());
+                    uploadedFiles.put(name, uploadedFile);
+                    storeForCleanup(req, uploadedFile);
+                } else {
+                    // C'est un paramètre texte - CORRIGÉ sans Collectors
+                    StringBuilder valueBuilder = new StringBuilder();
+                    try (BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(part.getInputStream()))) {
+
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            if (valueBuilder.length() > 0) {
+                                valueBuilder.append("\n");
+                            }
+                            valueBuilder.append(line);
+                        }
+                    }
+                    String value = valueBuilder.toString();
+
+                    // Gérer les paramètres multiples avec même nom
+                    if (textParams.containsKey(name)) {
+                        String[] existing = textParams.get(name);
+                        String[] newArray = new String[existing.length + 1];
+                        System.arraycopy(existing, 0, newArray, 0, existing.length);
+                        newArray[existing.length] = value;
+                        textParams.put(name, newArray);
+                    } else {
+                        textParams.put(name, new String[] { value });
+                    }
+                }
+            }
+
+            // Fusionner avec les paramètres existants
+            @SuppressWarnings("unchecked")
+            Map<String, String[]> existingParams = (Map<String, String[]>) req.getAttribute("requestParams");
+            if (existingParams != null) {
+                // Fusion manuelle sans Stream API
+                for (Map.Entry<String, String[]> entry : existingParams.entrySet()) {
+                    textParams.put(entry.getKey(), entry.getValue());
+                }
+            }
+
+            req.setAttribute("requestParams", textParams);
+            req.setAttribute("uploadedFiles", uploadedFiles);
+
+        } catch (Exception e) {
+            // Si ce n'est pas multipart ou erreur, on ignore
+            System.err.println("Erreur lors du parsing multipart: " + e.getMessage());
+        }
+    }
+
     private Object getParameterValue(String name, Class<?> type,
             Map<String, Object> allValues,
-            HttpServletRequest req) {
+            HttpServletRequest req,
+            Map<String, UploadedFile> uploadedFiles) {
+
+        // 1. Vérifier les fichiers uploadés
+        if (type.getName().equals("com.example.classe.UploadedFile")) {
+            return uploadedFiles.get(name);
+        }
+
+        // 2. Vérifier List<UploadedFile>
+        if (type.equals(List.class)) {
+            // Chercher tous les fichiers avec ce nom (pour les tableaux)
+            List<UploadedFile> files = new ArrayList<>();
+            for (Map.Entry<String, UploadedFile> entry : uploadedFiles.entrySet()) {
+                if (entry.getKey().startsWith(name + "[") || entry.getKey().equals(name)) {
+                    files.add(entry.getValue());
+                }
+            }
+            return files;
+        }
+
+        // 3. Valeur déjà convertie
         if (allValues.containsKey(name)) {
             Object value = allValues.get(name);
             if (value != null && type.isInstance(value)) {
@@ -286,29 +409,45 @@ public class UrlServlet extends HttpServlet {
             }
         }
 
+        // 4. Attribut de requête
         Object attrValue = req.getAttribute(name);
         if (attrValue != null && type.isInstance(attrValue)) {
             return type.cast(attrValue);
         }
 
+        // 5. Valeur par défaut
         return getDefaultValue(type);
+    }
+
+    private Object getParameterValue(String name, Class<?> type,
+            Map<String, Object> allValues,
+            HttpServletRequest req) {
+        return getParameterValue(name, type, allValues, req, new HashMap<>());
     }
 
     private Map<String, Object> collectAllValues(ScannerController.RouteData route,
             Map<String, String> pathVars,
             Map<String, String[]> reqParams,
+            Map<String, UploadedFile> uploadedFiles,
             HttpServletRequest req) {
         Map<String, Object> allValues = new HashMap<>();
 
+        // 1. Variables de chemin
         if (pathVars != null) {
-            pathVars.forEach((key, value) -> {
+            for (Map.Entry<String, String> entry : pathVars.entrySet()) {
+                String key = entry.getKey();
+                String value = entry.getValue();
                 Class<?> expectedType = route.paramTypes.getOrDefault(key, String.class);
                 allValues.put(key, convertValue(value, expectedType));
-            });
+            }
         }
 
+        // 2. Paramètres de requête texte
         if (reqParams != null) {
-            reqParams.forEach((key, values) -> {
+            for (Map.Entry<String, String[]> entry : reqParams.entrySet()) {
+                String key = entry.getKey();
+                String[] values = entry.getValue();
+
                 if (values != null && values.length > 0) {
                     Class<?> expectedType = route.paramTypes.getOrDefault(key, String.class);
 
@@ -318,13 +457,15 @@ public class UrlServlet extends HttpServlet {
                     } else if (values.length == 1) {
                         allValues.put(key, convertValue(values[0], expectedType));
                     } else {
-                        Object[] arrayValues = Arrays.stream(values)
-                                .map(v -> convertValue(v, String.class))
-                                .toArray();
+                        // Convertir le tableau sans Stream API
+                        Object[] arrayValues = new Object[values.length];
+                        for (int i = 0; i < values.length; i++) {
+                            arrayValues[i] = convertValue(values[i], String.class);
+                        }
                         allValues.put(key, arrayValues);
                     }
                 }
-            });
+            }
         }
 
         return allValues;
@@ -338,6 +479,7 @@ public class UrlServlet extends HttpServlet {
                 !type.equals(Boolean.class) &&
                 !type.equals(Long.class) &&
                 !type.equals(Float.class) &&
+                !type.getName().equals("com.example.classe.UploadedFile") &&
                 !Map.class.isAssignableFrom(type) &&
                 !List.class.isAssignableFrom(type);
     }
@@ -406,7 +548,9 @@ public class UrlServlet extends HttpServlet {
         if (result instanceof ModelVue) {
             ModelVue mv = (ModelVue) result;
             if (mv.getData() != null) {
-                mv.getData().forEach(req::setAttribute);
+                for (Map.Entry<String, Object> entry : mv.getData().entrySet()) {
+                    req.setAttribute(entry.getKey(), entry.getValue());
+                }
             }
             req.getRequestDispatcher(mv.getView()).forward(req, resp);
         } else if (result instanceof String) {
@@ -465,7 +609,8 @@ public class UrlServlet extends HttpServlet {
                 sb.append(toJsonValue(item));
             }
         } else if (obj instanceof Object[]) {
-            for (Object item : (Object[]) obj) {
+            Object[] array = (Object[]) obj;
+            for (Object item : array) {
                 if (!first)
                     sb.append(",");
                 first = false;
@@ -495,6 +640,8 @@ public class UrlServlet extends HttpServlet {
 
     // VOTRE méthode escapeJson originale
     private String escapeJson(String str) {
+        if (str == null)
+            return "";
         return str.replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
@@ -506,7 +653,11 @@ public class UrlServlet extends HttpServlet {
             throws IOException {
         res.setStatus(code);
         if (code == 405) {
-            String url = msg.substring(msg.lastIndexOf("pour ") + 5);
+            String url = "";
+            int idx = msg.lastIndexOf("pour ");
+            if (idx != -1) {
+                url = msg.substring(idx + 5);
+            }
             res.setHeader("Allow", getAllowedMethods(url));
         }
         res.setContentType("text/html");
