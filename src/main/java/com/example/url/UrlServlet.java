@@ -52,7 +52,6 @@ public class UrlServlet extends HttpServlet {
         String path = req.getRequestURI().substring(req.getContextPath().length());
         String method = req.getMethod();
 
-        // Ressources statiques
         if (getServletContext().getResource(path) != null) {
             getServletContext().getNamedDispatcher("default").forward(req, resp);
             return;
@@ -68,7 +67,6 @@ public class UrlServlet extends HttpServlet {
         ScannerController.RouteData route = findRoute(path, httpMethod, req);
 
         if (route == null) {
-            // Vérifier erreur 405
             if (hasRouteForUrl(path)) {
                 sendError(resp, 405, "Méthode " + httpMethod + " non autorisée pour " + path);
                 return;
@@ -80,10 +78,31 @@ public class UrlServlet extends HttpServlet {
         try {
             Object result = executeRoute(route, req, path);
 
-            // Vérifier si la méthode est annotée @Json
+            // CHANGEMENT: On garde VOTRE logique + on ajoute @Json
             if (route.returnsJson) {
-                handleJsonResult(result, resp);
+                // Si @Json est présent, on utilise VOTRE toJson() amélioré
+                resp.setContentType("application/json");
+                resp.setCharacterEncoding("UTF-8");
+
+                if (result instanceof ModelVue || result instanceof String) {
+                    // Pour ModelVue ou String avec @Json, on crée un objet JSON
+                    Map<String, Object> jsonResult = new HashMap<>();
+                    if (result instanceof ModelVue) {
+                        ModelVue mv = (ModelVue) result;
+                        jsonResult.put("view", mv.getView());
+                        if (mv.getData() != null) {
+                            jsonResult.put("data", mv.getData());
+                        }
+                    } else {
+                        jsonResult.put("result", result);
+                    }
+                    resp.getWriter().print(toJson(jsonResult));
+                } else {
+                    // Pour Map, Iterable, etc. on utilise VOTRE logique
+                    resp.getWriter().print(convertToJson(result));
+                }
             } else {
+                // Mode normal - VOTRE logique originale
                 handleResult(result, req, resp);
             }
 
@@ -93,13 +112,18 @@ public class UrlServlet extends HttpServlet {
         }
     }
 
-    private void handleJsonResult(Object result, HttpServletResponse resp)
-            throws IOException {
-        resp.setContentType("application/json");
-        resp.setCharacterEncoding("UTF-8");
-
-        String json = JsonConverter.toJson(result);
-        resp.getWriter().write(json);
+    // NOUVELLE méthode qui utilise VOTRE logique de conversion
+    private String convertToJson(Object obj) {
+        if (obj instanceof Map) {
+            return toJson((Map<?, ?>) obj);
+        } else if (obj instanceof Iterable) {
+            return toJsonArray(obj);
+        } else if (obj instanceof Object[]) {
+            return toJsonArray(obj);
+        } else {
+            // Pour les objets simples, on utilise votre logique toJsonValue
+            return toJsonValue(obj);
+        }
     }
 
     private boolean hasRouteForUrl(String path) {
@@ -138,7 +162,6 @@ public class UrlServlet extends HttpServlet {
     }
 
     private ScannerController.RouteData findRoute(String path, String method, HttpServletRequest req) {
-        // Route exacte
         if (routes.containsKey(path)) {
             ScannerController.RouteData route = routes.get(path).stream()
                     .filter(r -> r.httpMethod.equalsIgnoreCase(method))
@@ -150,7 +173,6 @@ public class UrlServlet extends HttpServlet {
             }
         }
 
-        // Route dynamique
         for (String pattern : routes.keySet()) {
             if (pattern.contains("{") && matchPattern(pattern, path)) {
                 for (ScannerController.RouteData route : routes.get(pattern)) {
@@ -167,7 +189,6 @@ public class UrlServlet extends HttpServlet {
     }
 
     private void prepareRoute(ScannerController.RouteData route, HttpServletRequest req) {
-        // Ajouter les paramètres de requête à l'attribut pour usage futur
         Map<String, String[]> params = new HashMap<>();
         Enumeration<String> paramNames = req.getParameterNames();
         while (paramNames.hasMoreElements()) {
@@ -229,11 +250,9 @@ public class UrlServlet extends HttpServlet {
             reqParams = new HashMap<>();
         }
 
-        // Collecter toutes les valeurs
         Map<String, Object> allValues = collectAllValues(route, pathVars, reqParams, req);
 
         if (route.hasMapParam) {
-            // Mode Map
             for (int i = 0; i < params.length; i++) {
                 Parameter param = params[i];
 
@@ -245,7 +264,6 @@ public class UrlServlet extends HttpServlet {
                 }
             }
         } else {
-            // Mode normal
             for (int i = 0; i < params.length; i++) {
                 Parameter param = params[i];
                 String name = getParamName(param);
@@ -261,7 +279,6 @@ public class UrlServlet extends HttpServlet {
     private Object getParameterValue(String name, Class<?> type,
             Map<String, Object> allValues,
             HttpServletRequest req) {
-        // 1. Valeur déjà convertie
         if (allValues.containsKey(name)) {
             Object value = allValues.get(name);
             if (value != null && type.isInstance(value)) {
@@ -269,13 +286,11 @@ public class UrlServlet extends HttpServlet {
             }
         }
 
-        // 2. Attribut de requête
         Object attrValue = req.getAttribute(name);
         if (attrValue != null && type.isInstance(attrValue)) {
             return type.cast(attrValue);
         }
 
-        // 3. Valeur par défaut
         return getDefaultValue(type);
     }
 
@@ -285,7 +300,6 @@ public class UrlServlet extends HttpServlet {
             HttpServletRequest req) {
         Map<String, Object> allValues = new HashMap<>();
 
-        // 1. Variables de chemin
         if (pathVars != null) {
             pathVars.forEach((key, value) -> {
                 Class<?> expectedType = route.paramTypes.getOrDefault(key, String.class);
@@ -293,7 +307,6 @@ public class UrlServlet extends HttpServlet {
             });
         }
 
-        // 2. Paramètres de requête
         if (reqParams != null) {
             reqParams.forEach((key, values) -> {
                 if (values != null && values.length > 0) {
@@ -305,7 +318,6 @@ public class UrlServlet extends HttpServlet {
                     } else if (values.length == 1) {
                         allValues.put(key, convertValue(values[0], expectedType));
                     } else {
-                        // Tableau de valeurs
                         Object[] arrayValues = Arrays.stream(values)
                                 .map(v -> convertValue(v, String.class))
                                 .toArray();
@@ -387,6 +399,7 @@ public class UrlServlet extends HttpServlet {
         return null;
     }
 
+    // ==================== VOTRE LOGIQUE ORIGINALE ====================
     private void handleResult(Object result, HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
 
@@ -406,21 +419,93 @@ public class UrlServlet extends HttpServlet {
             }
         } else if (result instanceof Map) {
             resp.setContentType("application/json");
-            resp.getWriter().print(JsonConverter.toJson(result));
+            resp.getWriter().print(toJson((Map<?, ?>) result));
         } else if (result instanceof Iterable || result instanceof Object[]) {
             resp.setContentType("application/json");
-            resp.getWriter().print(JsonConverter.toJson(result));
+            resp.getWriter().print(toJsonArray(result));
         } else if (result != null) {
             resp.setContentType("text/html");
             resp.getWriter().print(result.toString());
         }
     }
 
+    // VOTRE méthode toJson originale
+    private String toJson(Map<?, ?> map) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (!first)
+                sb.append(",");
+            first = false;
+
+            sb.append("\"").append(entry.getKey()).append("\":");
+            Object value = entry.getValue();
+
+            if (value instanceof String) {
+                sb.append("\"").append(value).append("\"");
+            } else {
+                sb.append(value);
+            }
+        }
+
+        return sb.append("}").toString();
+    }
+
+    // VOTRE méthode toJsonArray originale
+    private String toJsonArray(Object obj) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+
+        if (obj instanceof Iterable<?>) {
+            for (Object item : (Iterable<?>) obj) {
+                if (!first)
+                    sb.append(",");
+                first = false;
+                sb.append(toJsonValue(item));
+            }
+        } else if (obj instanceof Object[]) {
+            for (Object item : (Object[]) obj) {
+                if (!first)
+                    sb.append(",");
+                first = false;
+                sb.append(toJsonValue(item));
+            }
+        }
+
+        return sb.append("]").toString();
+    }
+
+    // VOTRE méthode toJsonValue originale
+    private String toJsonValue(Object value) {
+        if (value == null) {
+            return "null";
+        } else if (value instanceof String) {
+            return "\"" + escapeJson((String) value) + "\"";
+        } else if (value instanceof Number || value instanceof Boolean) {
+            return value.toString();
+        } else if (value instanceof Map) {
+            return toJson((Map<?, ?>) value);
+        } else if (value instanceof Iterable || value instanceof Object[]) {
+            return toJsonArray(value);
+        } else {
+            return "\"" + escapeJson(value.toString()) + "\"";
+        }
+    }
+
+    // VOTRE méthode escapeJson originale
+    private String escapeJson(String str) {
+        return str.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+
     private void sendError(HttpServletResponse res, int code, String msg)
             throws IOException {
         res.setStatus(code);
         if (code == 405) {
-            // Extraire l'URL du message
             String url = msg.substring(msg.lastIndexOf("pour ") + 5);
             res.setHeader("Allow", getAllowedMethods(url));
         }
