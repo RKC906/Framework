@@ -2,6 +2,7 @@ package com.example.controller;
 
 import java.io.File;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.net.URL;
 import java.util.*;
 
@@ -14,19 +15,64 @@ public class ScannerController {
         public Method method;
         public String url;
         public String httpMethod;
+        public Map<String, Class<?>> paramTypes = new HashMap<>();
+        public boolean hasMapParam = false;
+        public boolean hasComplexObject = false;
+        public boolean returnsJson = false;
 
         public RouteData(Object controller, Method method, String url, String httpMethod) {
             this.controller = controller;
             this.method = method;
             this.url = url;
             this.httpMethod = httpMethod;
+            analyzeParameters(method);
+            analyzeReturnType(method);
+        }
+
+        private void analyzeParameters(Method method) {
+            Parameter[] params = method.getParameters();
+            for (Parameter param : params) {
+                String name = param.isAnnotationPresent(Request.class) ? param.getAnnotation(Request.class).value()
+                        : param.getName();
+                Class<?> type = param.getType();
+                paramTypes.put(name, type);
+
+                // Vérifier Map<String, Object>
+                if (type.equals(Map.class)) {
+                    String typeName = param.getParameterizedType().getTypeName();
+                    if (typeName.contains("String, Object") || typeName.equals("java.util.Map")) {
+                        hasMapParam = true;
+                    }
+                }
+                // Vérifier objets complexes
+                else if (isComplexObject(type)) {
+                    hasComplexObject = true;
+                }
+            }
+        }
+
+        private void analyzeReturnType(Method method) {
+            // Vérifier si la méthode a l'annotation @Json
+            this.returnsJson = method.isAnnotationPresent(Json.class);
+        }
+
+        private boolean isComplexObject(Class<?> type) {
+            return !type.isPrimitive() &&
+                    !type.equals(String.class) &&
+                    !type.equals(Integer.class) &&
+                    !type.equals(Double.class) &&
+                    !type.equals(Boolean.class) &&
+                    !type.equals(Long.class) &&
+                    !type.equals(Float.class) &&
+                    !Map.class.isAssignableFrom(type) &&
+                    !List.class.isAssignableFrom(type);
         }
     }
 
     public static Map<String, List<RouteData>> scan(String basePackage) throws Exception {
         Map<String, List<RouteData>> routes = new HashMap<>();
 
-        for (Class<?> clazz : findControllers(basePackage)) {
+        for (Class<?> clazz : trouverControllers(basePackage)) {
             Object controller = clazz.getDeclaredConstructor().newInstance();
             String baseUrl = clazz.getAnnotation(Controller.class).value();
 
@@ -53,7 +99,7 @@ public class ScannerController {
             httpMethod = "POST";
             path = method.getAnnotation(Post.class).value();
         } else if (method.isAnnotationPresent(Route.class)) {
-            httpMethod = "GET"; // Par défaut
+            httpMethod = "GET";
             path = method.getAnnotation(Route.class).value();
         }
 
@@ -64,30 +110,39 @@ public class ScannerController {
         return null;
     }
 
-    private static List<Class<?>> findControllers(String basePackage) throws Exception {
-        List<Class<?>> controllers = new ArrayList<>();
-        String path = basePackage.replace('.', '/');
-        URL url = Thread.currentThread().getContextClassLoader().getResource(path);
+    public static List<Class<?>> trouverControllers(String basePackage) {
+        List<Class<?>> classesControllers = new ArrayList<>();
+        try {
+            String chemin = basePackage.replace('.', '/');
+            URL resource = Thread.currentThread().getContextClassLoader().getResource(chemin);
 
-        if (url != null) {
-            findClasses(new File(url.getFile()), basePackage, controllers);
+            if (resource != null) {
+                File repertoire = new File(resource.getFile());
+                scannerRepertoire(repertoire, basePackage, classesControllers);
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
         }
 
-        return controllers;
+        return classesControllers;
     }
 
-    private static void findClasses(File dir, String pkg, List<Class<?>> list) throws Exception {
-        if (!dir.exists())
+    private static void scannerRepertoire(File rep, String pkg, List<Class<?>> list) {
+        if (!rep.exists() || !rep.isDirectory())
             return;
 
-        for (File file : dir.listFiles()) {
-            if (file.isDirectory()) {
-                findClasses(file, pkg + "." + file.getName(), list);
-            } else if (file.getName().endsWith(".class")) {
-                String className = pkg + "." + file.getName().replace(".class", "");
-                Class<?> clazz = Class.forName(className);
-                if (clazz.isAnnotationPresent(Controller.class)) {
-                    list.add(clazz);
+        for (File f : rep.listFiles()) {
+            if (f.isDirectory()) {
+                scannerRepertoire(f, pkg + "." + f.getName(), list);
+            } else if (f.getName().endsWith(".class")) {
+                String nom = f.getName().replace(".class", "");
+                try {
+                    Class<?> c = Class.forName(pkg + "." + nom);
+                    if (c.isAnnotationPresent(Controller.class)) {
+                        list.add(c);
+                    }
+                } catch (Exception ignored) {
                 }
             }
         }
