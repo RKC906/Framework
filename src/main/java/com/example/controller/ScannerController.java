@@ -18,6 +18,7 @@ public class ScannerController {
         public Map<String, Class<?>> paramTypes = new HashMap<>();
         public boolean hasMapParam = false;
         public boolean hasComplexObject = false;
+        public boolean returnsJson = false;
 
         public RouteData(Object controller, Method method, String url, String httpMethod) {
             this.controller = controller;
@@ -25,6 +26,7 @@ public class ScannerController {
             this.url = url;
             this.httpMethod = httpMethod;
             analyzeParameters(method);
+            analyzeReturnType(method);
         }
 
         private void analyzeParameters(Method method) {
@@ -47,6 +49,11 @@ public class ScannerController {
                     hasComplexObject = true;
                 }
             }
+        }
+
+        private void analyzeReturnType(Method method) {
+            // Vérifier si la méthode a l'annotation @Json
+            this.returnsJson = method.isAnnotationPresent(Json.class);
         }
 
         private boolean isComplexObject(Class<?> type) {
