@@ -1,2 +1,9 @@
 mvn clean install
-# java -jar target/annotation-1.0.0.jar
+
+echo "Deletes Framework jar from Test project..."
+rm -f "../Test/libs/Framework-*.jar"
+
+echo "Copying framework jar to Test project..."
+cp -rf target/Framework-*.jar ../Test/libs/
+
+
